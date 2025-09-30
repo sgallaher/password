@@ -1,13 +1,27 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, session
 from datetime import datetime, timedelta
 from .models import User
-from . import db, bcrypt
+from . import db, bcrypt, mail  # include mail here
+from flask_mail import Message
+from itsdangerous import URLSafeTimedSerializer
+import os
 
-# Define the blueprint
 auth_bp = Blueprint("auth", __name__)
 
-# Lockout timings
 LOCKOUT_TIMES = [timedelta(minutes=1), timedelta(hours=1), timedelta(hours=24)]
+
+def generate_reset_token(email):
+    serializer = URLSafeTimedSerializer(os.environ.get("SECRET_KEY"))
+    return serializer.dumps(email, salt="password-reset-salt")
+
+def verify_reset_token(token, expiration=3600):
+    serializer = URLSafeTimedSerializer(os.environ.get("SECRET_KEY"))
+    try:
+        email = serializer.loads(token, salt="password-reset-salt", max_age=expiration)
+    except:
+        return None
+    return email
+
 
 @auth_bp.route("/", methods=["GET"])
 def index():
@@ -67,7 +81,6 @@ def login():
         else:
             user.failed_attempts += 1
             if user.failed_attempts >= 3:
-                # Determine lockout level
                 if not user.lockout_until:
                     user.lockout_until = datetime.utcnow() + LOCKOUT_TIMES[0]
                 elif (user.lockout_until - datetime.utcnow()).total_seconds() < 3600:
@@ -97,3 +110,50 @@ def dashboard():
         flash("Please log in first", "warning")
         return redirect(url_for("auth.login"))
     return render_template("dashboard.html")
+
+
+@auth_bp.route("/forgot_password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        email = request.form.get("email")
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            flash("Email not found", "danger")
+            return redirect(url_for("auth.forgot_password"))
+
+        token = generate_reset_token(user.email)
+        reset_url = url_for("auth.reset_password", token=token, _external=True)
+
+        msg = Message(
+            subject="Password Reset Request",
+            sender=os.environ.get("EMAIL_USER"),
+            recipients=[user.email],
+            body=f"Click the link to reset your password: {reset_url}\nThis link expires in 1 hour."
+        )
+        mail.send(msg)
+        flash("Password reset email sent!", "info")
+        return redirect(url_for("auth.login"))
+
+    return render_template("forgot_password.html")
+
+
+@auth_bp.route("/reset_password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    email = verify_reset_token(token)
+    if not email:
+        flash("Invalid or expired token", "danger")
+        return redirect(url_for("auth.forgot_password"))
+
+    user = User.query.filter_by(email=email).first()
+    if request.method == "POST":
+        password = request.form.get("password")
+        if not password:
+            flash("Password cannot be empty", "warning")
+            return redirect(url_for("auth.reset_password", token=token))
+
+        user.set_password(password)
+        db.session.commit()
+        flash("Password reset successful! Please log in.", "success")
+        return redirect(url_for("auth.login"))
+
+    return render_template("reset_password.html")

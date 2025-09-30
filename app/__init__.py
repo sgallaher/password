@@ -1,6 +1,3 @@
-
-
-
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_mail import Mail
@@ -14,7 +11,7 @@ bcrypt = Bcrypt()
 def create_app():
     app = Flask(__name__)
 
-    # Config from environment variables
+    # Config
     app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY", "devkey")
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get("DATABASE_URL")
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -28,7 +25,7 @@ def create_app():
     mail.init_app(app)
     bcrypt.init_app(app)
 
-    # Import routes **after app is created**
+    # Register blueprint
     from .routes import auth_bp
     app.register_blueprint(auth_bp)
 
