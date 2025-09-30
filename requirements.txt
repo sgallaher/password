@@ -1,0 +1,7 @@
+flask
+flask_sqlalchemy
+flask_migrate
+flask_mail
+flask-bcrypt
+gunicorn
+psycopg2-binary
