@@ -1,7 +1,12 @@
 from . import db, bcrypt
 from datetime import datetime
 
+
+
+
 class User(db.Model):
+    __tablename__ = 'users'  # avoid reserved word
+    
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(150), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
