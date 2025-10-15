@@ -39,9 +39,8 @@ def create_app():
             "https://www.googleapis.com/auth/userinfo.email",
             "openid"
         ],
-        redirect_url="https://passwordtest-anno.onrender.com/login/google/authorized"
-    )
-    
+        redirect_to="auth.google_authorized"  # Use your endpoint name
+        )
     app.register_blueprint(google_bp, url_prefix="/login")
 
     # Register routes
