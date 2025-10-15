@@ -5,13 +5,15 @@ from . import db
 from .models import User, LoginSession
 from datetime import datetime
 
-bp = Blueprint("auth", __name__)  # match your template url_for calls
+bp = Blueprint("auth", __name__)
 
+# ----- INDEX -----
 @bp.route("/")
 def index():
-    return render_template("index.html")
+    user_id = session.get("user_id")
+    return render_template("index.html", logged_in=bool(user_id))
 
-
+# ----- DASHBOARD -----
 @bp.route("/dashboard")
 def dashboard():
     user_id = session.get("user_id")
@@ -21,31 +23,26 @@ def dashboard():
         flash("Please log in first.", "warning")
         return redirect(url_for("auth.index"))
 
-    # Check for 120-minute timeout
+    # 120-minute timeout
     login_time = datetime.fromisoformat(login_time_str)
     if (datetime.utcnow() - login_time).total_seconds() > 120 * 60:
         flash("Session expired after 2 hours. Please log in again.", "warning")
         return redirect(url_for("auth.logout"))
 
-    # Total active time across all sessions
+    # Total active time
     total_active_seconds = db.session.query(
         func.coalesce(func.sum(LoginSession.active_time_seconds), 0)
     ).filter_by(user_id=user_id).scalar()
 
-    total_minutes = total_active_seconds // 60
-    total_seconds = total_active_seconds % 60
-
     return render_template(
         "dashboard.html",
-        total_active_minutes=total_minutes,
-        total_active_seconds=total_seconds
+        total_active_minutes=total_active_seconds // 60,
+        total_active_seconds=total_active_seconds % 60
     )
 
-
-# --- Google OAuth callback ---
+# ----- GOOGLE AUTH CALLBACK -----
 @bp.route("/login/google/authorized")
 def google_authorized():
-    # If not authorized, redirect to Flask-Dance login
     if not google.authorized:
         flash("Google login required.", "warning")
         return redirect(url_for("google.login"))
@@ -59,7 +56,6 @@ def google_authorized():
     email = info.get("email")
     name = info.get("name")
 
-    # Create user if new
     user = User.query.filter_by(email=email).first()
     if not user:
         user = User(email=email, name=name)
@@ -67,7 +63,7 @@ def google_authorized():
         db.session.commit()
         flash("Account created via Google!", "success")
 
-    # Start session
+    # Set session
     session["user_id"] = user.id
     session.permanent = True
     new_session = LoginSession(user_id=user.id)
@@ -82,7 +78,7 @@ def google_authorized():
 
     return redirect(url_for("auth.dashboard"))
 
-
+# ----- LOGOUT -----
 @bp.route("/logout")
 def logout():
     login_session_id = session.get("login_session_id")
@@ -99,7 +95,7 @@ def logout():
     flash("You have been logged out.", "info")
     return redirect(url_for("auth.index"))
 
-
+# ----- UPDATE ACTIVE TIME -----
 @bp.route("/update_active_time", methods=["POST"])
 def update_active_time():
     if "login_session_id" not in session:
@@ -126,7 +122,7 @@ def update_active_time():
 
     return jsonify({"status": "ok", "total_active_seconds": login_session.active_time_seconds})
 
-
+# ----- LEADERBOARD -----
 @bp.route("/leaderboard")
 def leaderboard():
     user_id = session.get("user_id")
@@ -134,7 +130,6 @@ def leaderboard():
         flash("Please log in first.", "warning")
         return redirect(url_for("auth.index"))
 
-    # Pagination parameters
     try:
         page = int(request.args.get("page", 1))
         per_page = int(request.args.get("per_page", 10))

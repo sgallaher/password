@@ -27,7 +27,6 @@ def create_app():
 
     app.permanent_session_lifetime = timedelta(minutes=120)
     
-    # Google OAuth
     google_bp = make_google_blueprint(
         client_id=os.environ.get("GOOGLE_OAUTH_CLIENT_ID"),
         client_secret=os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET"),
@@ -36,7 +35,7 @@ def create_app():
             "https://www.googleapis.com/auth/userinfo.email",
             "openid"
         ],
-        redirect_to="auth.google_authorized"
+        redirect_to="auth.google_authorized"  # callback route
     )
     app.register_blueprint(google_bp, url_prefix="/login")
 
