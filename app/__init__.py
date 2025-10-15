@@ -15,6 +15,10 @@ def create_app():
     # Trust proxy headers (Codespaces)
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
+    # --- Secure session cookies (fixes redirect loops on HTTPS) ---
+    app.config['SESSION_COOKIE_SECURE'] = True
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
     # Database
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get("DATABASE_URL")
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -35,8 +39,9 @@ def create_app():
             "https://www.googleapis.com/auth/userinfo.email",
             "openid"
         ],
-        redirect_to="auth.google_authorized"  # callback route
+        redirect_url="https://passwordtest-anno.onrender.com/login/google/authorized"
     )
+    
     app.register_blueprint(google_bp, url_prefix="/login")
 
     # Register routes

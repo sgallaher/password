@@ -52,6 +52,7 @@ def google_authorized():
         flash("Failed to fetch user info from Google.", "danger")
         return redirect(url_for("auth.index"))
 
+
     info = resp.json()
     email = info.get("email")
     name = info.get("name")
