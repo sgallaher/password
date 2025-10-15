@@ -2,9 +2,8 @@ from flask import Blueprint, redirect, url_for, session, render_template, flash,
 from flask_dance.contrib.google import google
 from sqlalchemy import func
 from . import db
-from .models import User
+from .models import User, LoginSession
 from datetime import datetime
-from .models import LoginSession
 
 bp = Blueprint("auth", __name__)  # match your template url_for calls
 
@@ -33,7 +32,6 @@ def dashboard():
         func.coalesce(func.sum(LoginSession.active_time_seconds), 0)
     ).filter_by(user_id=user_id).scalar()
 
-    # Convert to minutes and seconds for template display
     total_minutes = total_active_seconds // 60
     total_seconds = total_active_seconds % 60
 
@@ -43,13 +41,9 @@ def dashboard():
         total_active_seconds=total_seconds
     )
 
-@bp.route("/login/google")
-def google_login():
-    if not google.authorized:
-        return redirect(url_for("google.login"))
-    return redirect(url_for("auth.google_authorized"))
 
-@bp.route("/google/authorized")
+# --- Google OAuth callback ---
+@bp.route("/login/google/authorized")
 def google_authorized():
     if not google.authorized:
         return redirect(url_for("google.login"))
@@ -63,7 +57,7 @@ def google_authorized():
     email = info.get("email")
     name = info.get("name")
 
-    # Save user in database
+    # Save user if new
     user = User.query.filter_by(email=email).first()
     if not user:
         user = User(email=email, name=name)
@@ -73,19 +67,19 @@ def google_authorized():
 
     # Set session
     session["user_id"] = user.id
-    session.permanent = True  # ✅ Make session permanent
+    session.permanent = True
     new_session = LoginSession(user_id=user.id)
     db.session.add(new_session)
     db.session.commit()
 
-    # Store the session ID in Flask session for reference
     session["login_session_id"] = new_session.id
-    session["login_time"] = new_session.login_time.isoformat()   
+    session["login_time"] = new_session.login_time.isoformat()
     session["user_name"] = user.name
     session["user_email"] = user.email
     flash(f"Logged in as {user.name}!", "success")
 
     return redirect(url_for("auth.dashboard"))
+
 
 @bp.route("/logout")
 def logout():
@@ -110,7 +104,6 @@ def update_active_time():
         return jsonify({"error": "not logged in"}), 403
 
     try:
-        # Parse JSON robustly
         data = request.get_json(force=True)
         delta_seconds = int(data.get("active_seconds", 0))
     except Exception as e:
@@ -123,7 +116,6 @@ def update_active_time():
     if not login_session:
         return jsonify({"error": "login session not found"}), 404
 
-    # Accumulate active time
     if login_session.active_time_seconds is None:
         login_session.active_time_seconds = 0
 
@@ -132,6 +124,7 @@ def update_active_time():
 
     return jsonify({"status": "ok", "total_active_seconds": login_session.active_time_seconds})
 
+
 @bp.route("/leaderboard")
 def leaderboard():
     user_id = session.get("user_id")
@@ -139,30 +132,28 @@ def leaderboard():
         flash("Please log in first.", "warning")
         return redirect(url_for("auth.index"))
 
-    # --- Pagination parameters ---
+    # Pagination parameters
     try:
         page = int(request.args.get("page", 1))
-        per_page = int(request.args.get("per_page", 10))  # default 10
+        per_page = int(request.args.get("per_page", 10))
     except ValueError:
         page = 1
         per_page = 10
 
-    # --- Aggregate total active time per user ---
     query = (
         db.session.query(
             User.id,
             User.name,
             User.email,
-            db.func.coalesce(db.func.sum(LoginSession.active_time_seconds), 0).label("total_active_seconds")
+            func.coalesce(func.sum(LoginSession.active_time_seconds), 0).label("total_active_seconds")
         )
         .join(LoginSession, LoginSession.user_id == User.id)
         .group_by(User.id)
-        .order_by(db.desc("total_active_seconds"))
+        .order_by(func.sum(LoginSession.active_time_seconds).desc())
     )
 
     total_users = query.count()
     leaderboard_data = query.offset((page - 1) * per_page).limit(per_page).all()
-
     total_pages = (total_users + per_page - 1) // per_page
 
     return render_template(
