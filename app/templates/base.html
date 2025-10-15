@@ -9,7 +9,10 @@
 <nav class="navbar navbar-expand-lg navbar-light bg-light">
   <div class="container-fluid">
     <a class="navbar-brand" href="{{ url_for('auth.index') }}">ActiveTracker</a>
-    <div class="collapse navbar-collapse">
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarNav">
       <ul class="navbar-nav ms-auto">
         {% if session.get('user_id') %}
             <li class="nav-item">
@@ -23,7 +26,7 @@
             </li>
         {% else %}
             <li class="nav-item">
-                <a class="nav-link" href="{{ url_for('google.login') }}">Login with Google</a>
+                <a class="nav-link" href="{{ url_for('auth.google_login') }}">Login with Google</a>
             </li>
         {% endif %}
       </ul>
