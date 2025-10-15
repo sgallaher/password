@@ -27,7 +27,7 @@ def dashboard():
         flash("Session expired after 2 hours. Please log in again.", "warning")
         return redirect(url_for("auth.logout"))
 
-    # Calculate total active time across all sessions for this user
+    # Total active time across all sessions
     total_active_seconds = db.session.query(
         func.coalesce(func.sum(LoginSession.active_time_seconds), 0)
     ).filter_by(user_id=user_id).scalar()
@@ -45,7 +45,9 @@ def dashboard():
 # --- Google OAuth callback ---
 @bp.route("/login/google/authorized")
 def google_authorized():
+    # If not authorized, redirect to Flask-Dance login
     if not google.authorized:
+        flash("Google login required.", "warning")
         return redirect(url_for("google.login"))
 
     resp = google.get("/oauth2/v2/userinfo")
@@ -57,7 +59,7 @@ def google_authorized():
     email = info.get("email")
     name = info.get("name")
 
-    # Save user if new
+    # Create user if new
     user = User.query.filter_by(email=email).first()
     if not user:
         user = User(email=email, name=name)
@@ -65,7 +67,7 @@ def google_authorized():
         db.session.commit()
         flash("Account created via Google!", "success")
 
-    # Set session
+    # Start session
     session["user_id"] = user.id
     session.permanent = True
     new_session = LoginSession(user_id=user.id)
