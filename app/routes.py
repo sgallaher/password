@@ -20,15 +20,14 @@ def google_login():
     return redirect(url_for("google.login"))
 
 # ----- DASHBOARD -----
-from flask_dance.contrib.google import google
-
 @bp.route("/dashboard")
 def dashboard():
-    # --- Step 1: Check Google OAuth authorization ---
+    from flask_dance.contrib.google import google
+
+    # 1️⃣ OAuth check
     if not google.authorized:
         return redirect(url_for("google.login"))
 
-    # --- Step 2: Get user info from Google ---
     resp = google.get("/oauth2/v2/userinfo")
     if not resp.ok:
         flash("Failed to fetch user info from Google.", "danger")
@@ -38,7 +37,7 @@ def dashboard():
     email = info.get("email")
     name = info.get("name")
 
-    # --- Step 3: Retrieve or create user in DB ---
+    # 2️⃣ Get or create user
     user = User.query.filter_by(email=email).first()
     if not user:
         user = User(email=email, name=name)
@@ -46,41 +45,54 @@ def dashboard():
         db.session.commit()
         flash("Account created via Google!", "success")
 
-    # --- Step 4: Set session info ---
+    # 3️⃣ Session setup
     session["user_id"] = user.id
     session["user_name"] = user.name
     session["user_email"] = user.email
     session.permanent = True
-    login_time_str = session.get("login_time")
-    
-    # --- Step 5: Handle login session tracking ---
-    if not login_time_str:
-        new_session = LoginSession(user_id=user.id)
-        db.session.add(new_session)
-        db.session.commit()
-        session["login_session_id"] = new_session.id
-        session["login_time"] = new_session.login_time.isoformat()
-        login_time = new_session.login_time
-    else:
-        login_time = datetime.fromisoformat(login_time_str)
 
-    # --- Step 6: Check session timeout ---
-    if (datetime.utcnow() - login_time).total_seconds() > 120 * 60:
+    # 4️⃣ Login session tracking
+    login_session_id = session.get("login_session_id")
+    if login_session_id:
+        login_session = LoginSession.query.get(login_session_id)
+    else:
+        login_session = LoginSession(user_id=user.id)
+        db.session.add(login_session)
+        db.session.commit()
+        session["login_session_id"] = login_session.id
+        session["login_time"] = login_session.login_time.isoformat()
+
+    # 5️⃣ Add active time since last session / last dashboard load
+    login_time_str = session.get("login_time")
+    login_time = datetime.fromisoformat(login_time_str)
+    elapsed_seconds = int((datetime.utcnow() - login_time).total_seconds())
+
+    if elapsed_seconds > 0:
+        if login_session.active_time_seconds is None:
+            login_session.active_time_seconds = 0
+        login_session.active_time_seconds += elapsed_seconds
+        db.session.commit()
+        # update session timestamp to now for next calculation
+        session["login_time"] = datetime.utcnow().isoformat()
+
+
+    # 6️⃣ Session timeout
+    if elapsed_seconds > 120 * 60:
         flash("Session expired after 2 hours. Please log in again.", "warning")
         return redirect(url_for("auth.logout"))
 
-    # --- Step 7: Calculate total active time ---
+    # 7️⃣ Calculate total active time
     total_active_seconds = db.session.query(
         func.coalesce(func.sum(LoginSession.active_time_seconds), 0)
     ).filter_by(user_id=user.id).scalar()
 
-    # --- Step 8: Render dashboard ---
     return render_template(
         "dashboard.html",
         total_active_minutes=total_active_seconds // 60,
         total_active_seconds=total_active_seconds % 60,
         user_name=user.name
     )
+
 
 # ----- GOOGLE AUTH CALLBACK -----
 @bp.route("/login/google/authorized")
