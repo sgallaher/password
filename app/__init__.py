@@ -1,51 +1,51 @@
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
-from flask_mail import Mail
 from flask_bcrypt import Bcrypt
+from flask_dance.contrib.google import make_google_blueprint
 import os
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 db = SQLAlchemy()
-mail = Mail()
 bcrypt = Bcrypt()
 
-
 def create_app():
     app = Flask(__name__)
-    
+    app.secret_key = os.environ.get("SECRET_KEY", "devsecret")
 
+    # Trust proxy headers (Codespaces)
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-
-
-
-
-
-def create_app():
-    app = Flask(__name__)
-
-    # Config
-    app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY", "devkey")
+    # Database
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get("DATABASE_URL")
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-    app.config['MAIL_PORT'] = 587
-    app.config['MAIL_USE_TLS'] = True
-    app.config['MAIL_USERNAME'] = os.environ.get("EMAIL_USER")
-    app.config['MAIL_PASSWORD'] = os.environ.get("EMAIL_PASS")
-
     db.init_app(app)
-
-    # Only create tables if they don't exist
-    with app.app_context():
-        # This checks existing tables before creating new ones
-        existing_tables = db.inspect(db.engine).get_table_names()
-        if 'users' not in existing_tables:
-            db.create_all()
-            print("Tables created!")
-    mail.init_app(app)
     bcrypt.init_app(app)
 
-    # Register blueprint
-    from .routes import auth_bp
-    app.register_blueprint(auth_bp)
+
+    #timeout 
+    from datetime import timedelta
+
+    app.permanent_session_lifetime = timedelta(minutes=120)
+    
+    # Google OAuth
+    google_bp = make_google_blueprint(
+        client_id=os.environ.get("GOOGLE_OAUTH_CLIENT_ID"),
+        client_secret=os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET"),
+        scope=[
+            "https://www.googleapis.com/auth/userinfo.profile",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "openid"
+        ],
+        redirect_to="auth.google_authorized"
+    )
+    app.register_blueprint(google_bp, url_prefix="/login")
+
+    # Register routes
+    from . import routes
+    app.register_blueprint(routes.bp)
+
+    # Create tables
+    with app.app_context():
+        db.create_all()
 
     return app

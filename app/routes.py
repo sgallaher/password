@@ -1,159 +1,174 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session
-from datetime import datetime, timedelta
+from flask import Blueprint, redirect, url_for, session, render_template, flash, request, jsonify
+from flask_dance.contrib.google import google
+from sqlalchemy import func
+from . import db
 from .models import User
-from . import db, bcrypt, mail  # include mail here
-from flask_mail import Message
-from itsdangerous import URLSafeTimedSerializer
-import os
+from datetime import datetime
+from .models import LoginSession
 
-auth_bp = Blueprint("auth", __name__)
+bp = Blueprint("auth", __name__)  # match your template url_for calls
 
-LOCKOUT_TIMES = [timedelta(minutes=1), timedelta(hours=1), timedelta(hours=24)]
-
-def generate_reset_token(email):
-    serializer = URLSafeTimedSerializer(os.environ.get("SECRET_KEY"))
-    return serializer.dumps(email, salt="password-reset-salt")
-
-def verify_reset_token(token, expiration=3600):
-    serializer = URLSafeTimedSerializer(os.environ.get("SECRET_KEY"))
-    try:
-        email = serializer.loads(token, salt="password-reset-salt", max_age=expiration)
-    except:
-        return None
-    return email
-
-
-@auth_bp.route("/", methods=["GET"])
+@bp.route("/")
 def index():
     return render_template("index.html")
 
 
-@auth_bp.route("/register", methods=["GET", "POST"])
-def register():
-    if request.method == "POST":
-        email = request.form.get("email")
-        password = request.form.get("password")
-        if not email or not password:
-            flash("Please fill in all fields", "warning")
-            return redirect(url_for("auth.register"))
+@bp.route("/dashboard")
+def dashboard():
+    user_id = session.get("user_id")
+    login_time_str = session.get("login_time")
 
-        if User.query.filter_by(email=email).first():
-            flash("Email already registered", "danger")
-            return redirect(url_for("auth.register"))
+    if not user_id or not login_time_str:
+        flash("Please log in first.", "warning")
+        return redirect(url_for("auth.index"))
 
-        user = User(email=email)
-        user.set_password(password)
+    # Check for 120-minute timeout
+    login_time = datetime.fromisoformat(login_time_str)
+    if (datetime.utcnow() - login_time).total_seconds() > 120 * 60:
+        flash("Session expired after 2 hours. Please log in again.", "warning")
+        return redirect(url_for("auth.logout"))
+
+    # Calculate total active time across all sessions for this user
+    total_active_seconds = db.session.query(
+        func.coalesce(func.sum(LoginSession.active_time_seconds), 0)
+    ).filter_by(user_id=user_id).scalar()
+
+    # Convert to minutes and seconds for template display
+    total_minutes = total_active_seconds // 60
+    total_seconds = total_active_seconds % 60
+
+    return render_template(
+        "dashboard.html",
+        total_active_minutes=total_minutes,
+        total_active_seconds=total_seconds
+    )
+
+@bp.route("/login/google")
+def google_login():
+    if not google.authorized:
+        return redirect(url_for("google.login"))
+    return redirect(url_for("auth.google_authorized"))
+
+@bp.route("/google/authorized")
+def google_authorized():
+    if not google.authorized:
+        return redirect(url_for("google.login"))
+
+    resp = google.get("/oauth2/v2/userinfo")
+    if not resp.ok:
+        flash("Failed to fetch user info from Google.", "danger")
+        return redirect(url_for("auth.index"))
+
+    info = resp.json()
+    email = info.get("email")
+    name = info.get("name")
+
+    # Save user in database
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        user = User(email=email, name=name)
         db.session.add(user)
         db.session.commit()
-        flash("Account created! Please log in.", "success")
-        return redirect(url_for("auth.login"))
+        flash("Account created via Google!", "success")
 
-    return render_template("register.html")
+    # Set session
+    session["user_id"] = user.id
+    session.permanent = True  # ✅ Make session permanent
+    new_session = LoginSession(user_id=user.id)
+    db.session.add(new_session)
+    db.session.commit()
 
+    # Store the session ID in Flask session for reference
+    session["login_session_id"] = new_session.id
+    session["login_time"] = new_session.login_time.isoformat()   
+    session["user_name"] = user.name
+    session["user_email"] = user.email
+    flash(f"Logged in as {user.name}!", "success")
 
-@auth_bp.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        email = request.form.get("email")
-        password = request.form.get("password")
-        user = User.query.filter_by(email=email).first()
+    return redirect(url_for("auth.dashboard"))
 
-        if not user:
-            flash("Invalid email or password", "danger")
-            return redirect(url_for("auth.login"))
-
-        if user.disabled:
-            flash("Account disabled. Contact support.", "danger")
-            return redirect(url_for("auth.login"))
-
-        if user.lockout_until and datetime.utcnow() < user.lockout_until:
-            wait = int((user.lockout_until - datetime.utcnow()).total_seconds() // 60)
-            flash(f"Account locked. Try again in {wait} minute(s).", "warning")
-            return redirect(url_for("auth.login"))
-
-        if user.check_password(password):
-            user.failed_attempts = 0
-            user.lockout_until = None
-            db.session.commit()
-            session["user_id"] = user.id
-            flash("Logged in successfully!", "success")
-            return redirect(url_for("auth.dashboard"))
-        else:
-            user.failed_attempts += 1
-            if user.failed_attempts >= 3:
-                if not user.lockout_until:
-                    user.lockout_until = datetime.utcnow() + LOCKOUT_TIMES[0]
-                elif (user.lockout_until - datetime.utcnow()).total_seconds() < 3600:
-                    user.lockout_until = datetime.utcnow() + LOCKOUT_TIMES[1]
-                elif (user.lockout_until - datetime.utcnow()).total_seconds() < 86400:
-                    user.lockout_until = datetime.utcnow() + LOCKOUT_TIMES[2]
-                else:
-                    user.disabled = True
-                user.failed_attempts = 0
-            db.session.commit()
-            flash("Invalid password", "danger")
-            return redirect(url_for("auth.login"))
-
-    return render_template("login.html")
-
-
-@auth_bp.route("/logout")
+@bp.route("/logout")
 def logout():
-    session.pop("user_id", None)
-    flash("Logged out", "info")
+    login_session_id = session.get("login_session_id")
+    if login_session_id:
+        login_session = LoginSession.query.get(login_session_id)
+        if login_session and not login_session.logout_time:
+            login_session.logout_time = datetime.utcnow()
+            login_session.duration_minutes = int(
+                (login_session.logout_time - login_session.login_time).total_seconds() / 60
+            )
+            db.session.commit()
+
+    session.clear()
+    flash("You have been logged out.", "info")
     return redirect(url_for("auth.index"))
 
 
-@auth_bp.route("/dashboard")
-def dashboard():
-    if "user_id" not in session:
-        flash("Please log in first", "warning")
-        return redirect(url_for("auth.login"))
-    return render_template("dashboard.html")
+@bp.route("/update_active_time", methods=["POST"])
+def update_active_time():
+    if "login_session_id" not in session:
+        return jsonify({"error": "not logged in"}), 403
 
+    try:
+        # Parse JSON robustly
+        data = request.get_json(force=True)
+        delta_seconds = int(data.get("active_seconds", 0))
+    except Exception as e:
+        return jsonify({"error": f"Invalid JSON: {str(e)}"}), 400
 
-@auth_bp.route("/forgot_password", methods=["GET", "POST"])
-def forgot_password():
-    if request.method == "POST":
-        email = request.form.get("email")
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            flash("Email not found", "danger")
-            return redirect(url_for("auth.forgot_password"))
+    if delta_seconds <= 0:
+        return jsonify({"status": "nothing to update"})
 
-        token = generate_reset_token(user.email)
-        reset_url = url_for("auth.reset_password", token=token, _external=True)
+    login_session = LoginSession.query.get(session["login_session_id"])
+    if not login_session:
+        return jsonify({"error": "login session not found"}), 404
 
-        msg = Message(
-            subject="Password Reset Request",
-            sender=os.environ.get("EMAIL_USER"),
-            recipients=[user.email],
-            body=f"Click the link to reset your password: {reset_url}\nThis link expires in 1 hour."
+    # Accumulate active time
+    if login_session.active_time_seconds is None:
+        login_session.active_time_seconds = 0
+
+    login_session.active_time_seconds += delta_seconds
+    db.session.commit()
+
+    return jsonify({"status": "ok", "total_active_seconds": login_session.active_time_seconds})
+
+@bp.route("/leaderboard")
+def leaderboard():
+    user_id = session.get("user_id")
+    if not user_id:
+        flash("Please log in first.", "warning")
+        return redirect(url_for("auth.index"))
+
+    # --- Pagination parameters ---
+    try:
+        page = int(request.args.get("page", 1))
+        per_page = int(request.args.get("per_page", 10))  # default 10
+    except ValueError:
+        page = 1
+        per_page = 10
+
+    # --- Aggregate total active time per user ---
+    query = (
+        db.session.query(
+            User.id,
+            User.name,
+            User.email,
+            db.func.coalesce(db.func.sum(LoginSession.active_time_seconds), 0).label("total_active_seconds")
         )
-        mail.send(msg)
-        flash("Password reset email sent!", "info")
-        return redirect(url_for("auth.login"))
+        .join(LoginSession, LoginSession.user_id == User.id)
+        .group_by(User.id)
+        .order_by(db.desc("total_active_seconds"))
+    )
 
-    return render_template("forgot_password.html")
+    total_users = query.count()
+    leaderboard_data = query.offset((page - 1) * per_page).limit(per_page).all()
 
+    total_pages = (total_users + per_page - 1) // per_page
 
-@auth_bp.route("/reset_password/<token>", methods=["GET", "POST"])
-def reset_password(token):
-    email = verify_reset_token(token)
-    if not email:
-        flash("Invalid or expired token", "danger")
-        return redirect(url_for("auth.forgot_password"))
-
-    user = User.query.filter_by(email=email).first()
-    if request.method == "POST":
-        password = request.form.get("password")
-        if not password:
-            flash("Password cannot be empty", "warning")
-            return redirect(url_for("auth.reset_password", token=token))
-
-        user.set_password(password)
-        db.session.commit()
-        flash("Password reset successful! Please log in.", "success")
-        return redirect(url_for("auth.login"))
-
-    return render_template("reset_password.html")
+    return render_template(
+        "leaderboard.html",
+        leaderboard=leaderboard_data,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages
+    )
