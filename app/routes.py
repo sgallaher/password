@@ -141,7 +141,7 @@ def google_authorized():
     return redirect(url_for("auth.dashboard"))
 
 # ----- LOGOUT -----
-@bp.route("/logout")
+@bp.route("/logout", methods=["GET", "POST"])
 def logout():
     login_session_id = session.get("login_session_id")
     if login_session_id:
@@ -154,37 +154,54 @@ def logout():
             db.session.commit()
 
     session.clear()
+
+    # If it's a beacon, just return 204 (no content)
+    if request.method == "POST" or request.headers.get("Content-Type") == "application/json":
+        return ("", 204)
+
     flash("You have been logged out.", "info")
     return redirect(url_for("auth.index"))
 
+
 # ----- UPDATE ACTIVE TIME -----
+from datetime import datetime, timedelta
+
 @bp.route("/update_active_time", methods=["POST"])
 def update_active_time():
     if "login_session_id" not in session:
         return jsonify({"error": "not logged in"}), 403
 
-    try:
-        data = request.get_json(force=True)
-        delta_seconds = int(data.get("active_seconds", 0))
-    except Exception as e:
-        return jsonify({"error": f"Invalid JSON: {str(e)}"}), 400
-
-    if delta_seconds <= 0:
-        return jsonify({"status": "nothing to update"})
-
     login_session = LoginSession.query.get(session["login_session_id"])
     if not login_session:
-        return jsonify({"error": "login session not found"}), 404
+        return jsonify({"error": "session not found"}), 404
 
-    if login_session.active_time_seconds is None:
-        login_session.active_time_seconds = 0
+    # Get the last update time (stored in DB)
+    now = datetime.utcnow()
+    last_update = login_session.last_update_time or login_session.login_time
 
-    login_session.active_time_seconds += delta_seconds
+    # Max allowed increment based on wall-clock time
+    allowed_seconds = (now - last_update).total_seconds()
+    allowed_seconds = min(allowed_seconds, 30)  # if JS posts every 30s
+
+    # Parse input
+    try:
+        data = request.get_json(force=True)
+        delta = int(data.get("active_seconds", 0))
+    except Exception:
+        return jsonify({"error": "invalid input"}), 400
+
+    # Reject unreasonable updates
+    if delta < 0 or delta > allowed_seconds + 5:
+        current_app.logger.warning(f"User {login_session.user_id} attempted invalid delta: {delta}")
+        return jsonify({"error": "invalid active time"}), 400
+
+    # Update safely
+    login_session.active_time_seconds = (login_session.active_time_seconds or 0) + delta
+    login_session.last_update_time = now
     db.session.commit()
 
-    return jsonify({"status": "ok", "total_active_seconds": login_session.active_time_seconds})
-
-# ----- LEADERBOARD -----
+    return jsonify({"status": "ok", "total": login_session.active_time_seconds})
+#leaderboard
 @bp.route("/leaderboard")
 def leaderboard():
     user_id = session.get("user_id")
@@ -192,6 +209,11 @@ def leaderboard():
         flash("Please log in first.", "warning")
         return redirect(url_for("auth.index"))
 
+    # Refresh session lifetime
+    session.permanent = True
+    user_name = session.get("user_name", "User")
+
+    # Pagination
     try:
         page = int(request.args.get("page", 1))
         per_page = int(request.args.get("per_page", 10))
@@ -199,6 +221,7 @@ def leaderboard():
         page = 1
         per_page = 10
 
+    # Leaderboard query
     query = (
         db.session.query(
             User.id,
@@ -220,5 +243,16 @@ def leaderboard():
         leaderboard=leaderboard_data,
         page=page,
         per_page=per_page,
-        total_pages=total_pages
+        total_pages=total_pages,
+        user_name=user_name
     )
+
+
+
+@bp.errorhandler(401)
+@bp.errorhandler(403)
+@bp.errorhandler(404)
+def unauthorized_error(error):
+    """Redirect to index if session expired or unauthorized."""
+    session.clear()
+    return redirect(url_for('index'))

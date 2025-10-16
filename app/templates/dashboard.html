@@ -23,8 +23,8 @@
             <p class="card-text"><strong>Email:</strong> {{ session.get('user_email', 'Not available') }}</p>
 
             <hr>
-
-            <p>🕒 Active Time Following Ball: <span id="activeTimeDisplay">0m 0s</span></p>
+            <p>⏱ Active Following Ball Timer: <span id="activeFollowTimer">0m 0s</span></p>
+            <p>⏳ Inactivity Countdown: <span id="inactivityCountdown">30</span>s</p>
             <p>📊 Total Active Time On Site: <span id="totalActiveTimeDisplay">{{ total_active_minutes }}m {{ total_active_seconds }}s</span></p>
 
             <ul class="list-unstyled mt-3">
@@ -39,28 +39,26 @@
 <script>
 const ball = document.getElementById("ball");
 const container = document.getElementById("game-container");
-const activeDisplay = document.getElementById("activeTimeDisplay");
+const activeFollowDisplay = document.getElementById("activeFollowTimer");
+const inactivityCountdownDisplay = document.getElementById("inactivityCountdown");
 const totalDisplay = document.getElementById("totalActiveTimeDisplay");
 
-// --- Timers ---
 let sessionActiveSeconds = 0;
-let pendingActiveSeconds = 0;
 let totalActiveSeconds = {{ total_active_minutes }}*60 + {{ total_active_seconds }};
-let lastFollowTime = Date.now();
-let lastSecondUpdate = Date.now();
+let pendingActiveSeconds = 0;
 
-// --- Ball properties ---
+let inactivityCountdown = 30;
+let lastFollowTime = Date.now();
+let lastActiveUpdate = Date.now();
+let lastInactivityUpdate = Date.now();
+let following = false;
+
+// Ball motion
 let ballSize = 80;
-let ballSpeed = 1;
-let elapsedTime = 0;
 let posX = 100;
 let posY = 100;
 let angle = Math.random() * 2 * Math.PI;
 
-const jitterChangeInterval = 0.2;
-const maxAngleChange = 0.2;
-
-// --- Container bounds ---
 function updateBounds() {
     containerWidth = container.clientWidth;
     containerHeight = container.clientHeight;
@@ -68,84 +66,97 @@ function updateBounds() {
 updateBounds();
 window.addEventListener("resize", updateBounds);
 
-// --- Mouse tracking ---
-let mouseX = 0;
-let mouseY = 0;
+let mouseX = 0, mouseY = 0;
 document.addEventListener("mousemove", (e) => {
     const rect = container.getBoundingClientRect();
     mouseX = e.clientX - rect.left;
     mouseY = e.clientY - rect.top;
 });
 
-// --- Main game loop ---
+// Main loop
 function gameLoop() {
     const now = Date.now();
 
-    if (Math.random() < jitterChangeInterval) {
-        angle += (Math.random() * 2 - 1) * maxAngleChange;
-    }
+    // Move ball
+    if (Math.random() < 0.2) angle += (Math.random()*2-1)*0.2;
+    posX += Math.cos(angle);
+    posY += Math.sin(angle);
 
-    posX += Math.cos(angle) * ballSpeed;
-    posY += Math.sin(angle) * ballSpeed;
-
-    // Bounce off edges
-    if (posX < 0) { posX = 0; angle = Math.PI - angle; }
-    if (posY < 0) { posY = 0; angle = -angle; }
-    if (posX + ballSize > container.clientWidth) { posX = container.clientWidth - ballSize; angle = Math.PI - angle; }
-    if (posY + ballSize > container.clientHeight) { posY = container.clientHeight - ballSize; angle = -angle; }
+    // Bounce
+    if (posX < 0){ posX = 0; angle = Math.PI - angle; }
+    if (posY < 0){ posY = 0; angle = -angle; }
+    if (posX + ballSize > container.clientWidth){ posX = container.clientWidth - ballSize; angle = Math.PI - angle; }
+    if (posY + ballSize > container.clientHeight){ posY = container.clientHeight - ballSize; angle = -angle; }
 
     ball.style.left = posX + "px";
     ball.style.top = posY + "px";
-    ball.style.width = ballSize + "px";
-    ball.style.height = ballSize + "px";
 
-    const mouseOverBall =
-        mouseX >= posX && mouseX <= posX + ballSize &&
-        mouseY >= posY && mouseY <= posY + ballSize;
+    // Following detection
+    following = mouseX >= posX && mouseX <= posX + ballSize &&
+                mouseY >= posY && mouseY <= posY + ballSize;
+    if (following) lastFollowTime = now;
 
-    if (mouseOverBall) {
-        if (now - lastSecondUpdate >= 1000) {
-            sessionActiveSeconds++;
-            pendingActiveSeconds++;
-            totalActiveSeconds++;
-            lastSecondUpdate = now;
-        }
-        lastFollowTime = now;
+    // Active-following timer
+    if (following && now - lastActiveUpdate >= 1000) {
+        sessionActiveSeconds++;
+        pendingActiveSeconds++;
+        totalActiveSeconds++;
+        lastActiveUpdate = now;
     }
 
-    activeDisplay.textContent = `${Math.floor(sessionActiveSeconds / 60)}m ${sessionActiveSeconds % 60}s`;
-    totalDisplay.textContent = `${Math.floor(totalActiveSeconds / 60)}m ${totalActiveSeconds % 60}s`;
+    // Inactivity countdown
+    if (!following && inactivityCountdown > 0 && now - lastInactivityUpdate >= 1000) {
+        inactivityCountdown--;
+        lastInactivityUpdate = now;
+    }
 
-    elapsedTime += 1 / 60; // approx 60 FPS
-    const progress = Math.min(elapsedTime / 300, 1);
-    ballSpeed = 1 + 1.5 * progress;
-    ballSize = 80 - 30 * progress;
+    // Update displays
+    activeFollowDisplay.textContent = `${Math.floor(sessionActiveSeconds/60)}m ${sessionActiveSeconds%60}s`;
+    inactivityCountdownDisplay.textContent = inactivityCountdown;
+    totalDisplay.textContent = `${Math.floor(totalActiveSeconds/60)}m ${totalActiveSeconds%60}s`;
 
-    if (now - lastFollowTime > 30000) {
-        if (pendingActiveSeconds > 0) {
-            navigator.sendBeacon("/update_active_time",
-                new Blob([JSON.stringify({ active_seconds: pendingActiveSeconds })], { type: 'application/json' }));
-        }
-        window.location.href = "{{ url_for('auth.logout') }}";
+    // Inactivity logout
+    if (inactivityCountdown <= 0) {
+        endSession("inactivity");
         return;
     }
 
     requestAnimationFrame(gameLoop);
 }
-
 requestAnimationFrame(gameLoop);
 
-// --- Periodic backend update every 30s ---
+// Periodic backend update every 30s
 setInterval(() => {
-    if (pendingActiveSeconds > 0) {
+    if (pendingActiveSeconds > 0){
         fetch("/update_active_time", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ active_seconds: pendingActiveSeconds })
-        }).catch(err => console.error("Active time update failed:", err));
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({active_seconds: pendingActiveSeconds})
+        }).catch(err => console.error(err));
         pendingActiveSeconds = 0;
     }
 }, 30000);
+
+// End session function
+function endSession(reason="unload") {
+    if (pendingActiveSeconds > 0){
+        navigator.sendBeacon("/update_active_time", new Blob(
+            [JSON.stringify({active_seconds: pendingActiveSeconds})], 
+            {type:"application/json"}
+        ));
+        pendingActiveSeconds = 0;
+    }
+
+    if (reason === "inactivity") {
+        // Only log out on inactivity
+        navigator.sendBeacon("/logout");
+        window.location.href = "/";
+    }
+}
+
+// Only update active time on unload, no logout
+window.addEventListener("beforeunload", ()=>endSession("unload"));
 </script>
+
 
 {% endblock %}

@@ -32,6 +32,9 @@ def create_app():
     # Database
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get("DATABASE_URL")
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    "pool_pre_ping": True
+}
     db.init_app(app)
     bcrypt.init_app(app)
 
@@ -62,5 +65,23 @@ def create_app():
     with app.app_context():
         db.create_all()
 
-    print("Google redirect URI:", google_bp.redirect_url)
+    
+     # -----------------------------
+    # App-level error handlers
+    # -----------------------------
+    from flask import session, redirect, url_for, flash
+
+    @app.errorhandler(404)
+    def page_not_found(e):
+        session.clear()
+        flash("Page not found. Redirected to homepage.", "warning")
+        return redirect(url_for("auth.index"))
+
+    @app.errorhandler(401)
+    @app.errorhandler(403)
+    def unauthorized_error(e):
+        session.clear()
+        flash("Session expired or unauthorized. Please log in.", "warning")
+        return redirect(url_for("auth.index"))
+
     return app
